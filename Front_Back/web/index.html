@@ -436,6 +436,39 @@
                     <span>服务端路由：<code>POST /api/style-transfer/ink</code></span>
                 </div>
             </article>
+            <article class="panel" id="postcard-panel">
+                <div class="badge">A + C · 水墨明信片</div>
+                <h2>一键生成 · 水墨画 + 诗句</h2>
+                <p>
+                    上传一张风景图，自动生成水墨风格图像与一句诗，并排版到明信片模板中，可直接下载分享。
+                </p>
+                <div class="uploader" data-feature="postcard">
+                    <label class="dropzone" for="postcard-upload">
+                        <strong>上传风景图</strong>
+                        <span>将用于风格迁移与诗句生成</span>
+                        <button class="secondary" type="button">选择文件</button>
+                        <input id="postcard-upload" type="file" accept="image/*" />
+                    </label>
+                    <div class="preview-strip">
+                        <div class="preview-slot" data-role="original">
+                            <label>原图</label>
+                        </div>
+                        <div class="preview-slot" data-role="ink">
+                            <label>水墨成品</label>
+                        </div>
+                    </div>
+                </div>
+                <textarea class="poem-output" id="postcard-poem" placeholder="自动生成的一句诗会出现在这里，亦可手动修改…"></textarea>
+                <div class="actions-row">
+                    <button class="primary" id="btn-generate-postcard">生成水墨明信片</button>
+                    <button class="secondary" id="btn-download-postcard" disabled>下载明信片 PNG</button>
+                </div>
+                <div style="margin-top:18px">
+                    <div class="postcard-preview">
+                        <canvas id="postcard-canvas" width="1200" height="800" style="width:100%;aspect-ratio:3/2;border:1px solid var(--border);border-radius:14px;background: var(--sand);"></canvas>
+                    </div>
+                </div>
+            </article>
 
             <article class="panel" id="gongbi-panel">
                 <div class="badge">模块 B · 工笔人像</div>
@@ -468,31 +501,7 @@
                 </div>
             </article>
 
-            <article class="panel" id="poem-panel">
-                <div class="badge">模块 C · 图文生成</div>
-                <h2>图像 → 一句诗</h2>
-                <p>
-                    任意选一张图像，调用图文模型抽取意境关键词，并生成一句七言短句，用于在前端同步展示或附加到分享卡片中。
-                </p>
-                <div class="uploader" data-feature="poem">
-                    <label class="dropzone" for="poem-upload">
-                        <strong>上传参考图</strong>
-                        <span>模型会自动抽取场景元素生成诗句</span>
-                        <button class="secondary" type="button">选择文件</button>
-                        <input id="poem-upload" type="file" accept="image/*" />
-                    </label>
-                    <div class="preview-strip">
-                        <div class="preview-slot" data-role="original">
-                            <label>原图</label>
-                        </div>
-                    </div>
-                </div>
-                <textarea class="poem-output" id="poem-text" placeholder="生成的诗句会展示在这里，亦可手动润色……"></textarea>
-                <div class="actions-row">
-                    <button class="primary action-send" data-feature="poem">生成诗句</button>
-                    <span>图文路由：<code>POST /api/poem</code></span>
-                </div>
-            </article>
+            <!-- 原“模块 C · 图文生成”已与模块 A 合并为明信片功能 -->
         </section>
 
         
@@ -511,7 +520,8 @@
         const state = {
             ink: { file: null },
             gongbi: { file: null },
-            poem: { file: null }
+            poem: { file: null },
+            postcard: { file: null, inkDataUrl: null }
         };
 
         const toast = document.getElementById('toast');
@@ -567,7 +577,9 @@
                 const result = await response.json();
                 const uploader = document.querySelector(`.uploader[data-feature="${feature}"]`);
                 if (feature === 'poem') {
-                    document.getElementById('poem-text').value = result.poem || '（服务未返回诗句）';
+                    // 已合并到明信片逻辑中，这里保持兼容：
+                    const legacy = document.getElementById('poem-text');
+                    if (legacy) legacy.value = result.poem || '（服务未返回诗句）';
                 } else {
                     if (result.stylized) {
                         updatePreview(uploader, 'stylized', result.stylized);
@@ -585,6 +597,180 @@
 
         document.querySelectorAll('.action-send').forEach((btn) => {
             btn.addEventListener('click', () => handleSubmit(btn.dataset.feature));
+        });
+
+        // --- A + C 合并：水墨明信片 ---
+        const wrapText = (ctx, text, x, y, maxWidth, lineHeight) => {
+            if (!text) return 0;
+            const chars = [...text];
+            let line = '';
+            let lines = 0;
+            for (let i = 0; i < chars.length; i++) {
+                const testLine = line + chars[i];
+                const metrics = ctx.measureText(testLine);
+                if (metrics.width > maxWidth && line !== '') {
+                    ctx.fillText(line, x, y);
+                    line = chars[i];
+                    y += lineHeight;
+                    lines += 1;
+                } else {
+                    line = testLine;
+                }
+            }
+            if (line) {
+                ctx.fillText(line, x, y);
+                lines += 1;
+            }
+            return lines;
+        };
+
+        const composePostcard = async (inkDataUrl, poemText) => {
+            const canvas = document.getElementById('postcard-canvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width, H = canvas.height;
+
+            // 背景：仿米色纸张 + 轻微装饰
+            ctx.fillStyle = '#f1e6d4';
+            ctx.fillRect(0, 0, W, H);
+
+            // 外描边与内边距
+            ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(12, 12, W - 24, H - 24);
+            ctx.strokeStyle = 'rgba(0,0,0,0.08)';
+            ctx.strokeRect(32, 32, W - 64, H - 64);
+
+            // 左侧图像区域
+            const img = await new Promise((resolve) => {
+                const im = new Image();
+                im.onload = () => resolve(im);
+                im.src = inkDataUrl;
+            });
+
+            const pad = 48;
+            const leftX = pad + 8;
+            const topY = pad + 32;
+            const imgW = Math.floor(W * 0.62);
+            const imgH = H - topY - pad;
+
+            // 绘制带白边的照片卡槽
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(leftX - 8, topY - 8, imgW + 16, imgH + 16);
+            // 等比裁剪填充（cover）
+            const ratio = Math.max(imgW / img.width, imgH / img.height);
+            const drawW = img.width * ratio;
+            const drawH = img.height * ratio;
+            const dx = leftX + (imgW - drawW) / 2;
+            const dy = topY + (imgH - drawH) / 2;
+            ctx.drawImage(img, dx, dy, drawW, drawH);
+
+            // 右侧诗句区域
+            const textX = leftX + imgW + 32;
+            const textY = topY + 8;
+            const textW = W - textX - pad;
+            ctx.fillStyle = '#0f1c1f';
+            ctx.font = '28px "Noto Serif SC"';
+            ctx.textBaseline = 'top';
+            const lineHeight = 40;
+            const title = '明信片 · 墨境';
+            ctx.fillStyle = '#3b4d52';
+            ctx.font = 'bold 18px Space Grotesk';
+            ctx.fillText(title, textX, textY);
+
+            // 分隔线
+            ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(textX, textY + 28);
+            ctx.lineTo(W - pad, textY + 28);
+            ctx.stroke();
+
+            // 诗句主体
+            ctx.fillStyle = '#2b1f25';
+            ctx.font = '28px "Noto Serif SC"';
+            const linesUsed = wrapText(ctx, poemText, textX, textY + 44, textW, lineHeight);
+
+            // 小邮票框装饰
+            const stampSize = 120;
+            const stampX = W - pad - stampSize;
+            const stampY = H - pad - stampSize;
+            ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+            ctx.setLineDash([6, 4]);
+            ctx.strokeRect(stampX, stampY, stampSize, stampSize);
+            ctx.setLineDash([]);
+            ctx.font = '12px Space Grotesk';
+            ctx.fillStyle = 'rgba(0,0,0,0.45)';
+            ctx.fillText('STAMP', stampX + 12, stampY + 12);
+
+            // 底部品牌标识
+            ctx.font = '13px Space Grotesk';
+            ctx.fillStyle = 'rgba(0,0,0,0.45)';
+            ctx.fillText('© 墨境实验室 · CycleGAN', pad, H - pad - 18);
+        };
+
+        const generatePostcardFlow = async () => {
+            if (!state.postcard.file) {
+                showToast('请先上传图片');
+                return;
+            }
+            showToast('正在生成水墨与诗句…');
+
+            // 1) 调水墨风格（A）
+            const fdA = new FormData();
+            fdA.append('image', state.postcard.file);
+            try {
+                const respA = await fetch(API_ROUTES.ink, { method: 'POST', body: fdA });
+                if (!respA.ok) throw new Error('style-transfer failed');
+                const dataA = await respA.json();
+                const inkUrl = dataA.cycle || dataA.stylized; // cycle 为水墨
+                if (!inkUrl) throw new Error('no ink image');
+                state.postcard.inkDataUrl = inkUrl;
+                updatePreview(document.querySelector('.uploader[data-feature="postcard"]'), 'ink', inkUrl);
+            } catch (e) {
+                console.error(e);
+                showToast('水墨风格生成失败');
+                return;
+            }
+
+            // 2) 调诗句（C）——建议使用原图以保留色彩线索
+            const fdC = new FormData();
+            fdC.append('image', state.postcard.file);
+            let poemText = '';
+            try {
+                const respC = await fetch(API_ROUTES.poem, { method: 'POST', body: fdC });
+                if (!respC.ok) throw new Error('poem failed');
+                const dataC = await respC.json();
+                poemText = dataC.poem || '';
+            } catch (e) {
+                console.error(e);
+                poemText = '';
+            }
+
+            const poemBox = document.getElementById('postcard-poem');
+            if (poemBox) poemBox.value = poemText || poemBox.value || '山川墨影间，清风照人还。';
+
+            await composePostcard(state.postcard.inkDataUrl, poemBox ? poemBox.value : poemText);
+            const dlBtn = document.getElementById('btn-download-postcard');
+            if (dlBtn) dlBtn.disabled = false;
+            showToast('明信片已生成');
+        };
+
+        document.getElementById('btn-generate-postcard')?.addEventListener('click', generatePostcardFlow);
+        document.getElementById('btn-download-postcard')?.addEventListener('click', () => {
+            const canvas = document.getElementById('postcard-canvas');
+            if (!canvas) return;
+            const link = document.createElement('a');
+            link.download = 'postcard.png';
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        });
+
+        // 实时修改诗句时，自动刷新预览
+        document.getElementById('postcard-poem')?.addEventListener('input', (e) => {
+            if (state.postcard.inkDataUrl) {
+                composePostcard(state.postcard.inkDataUrl, e.target.value);
+            }
         });
 
         document.querySelector('[data-scroll]')?.addEventListener('click', (e) => {
